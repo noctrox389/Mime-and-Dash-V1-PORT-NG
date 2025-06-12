@@ -1,0 +1,1 @@
+function onEvent(n,v) if n == 'CamSpeed' then setProperty('cameraSpeed',tonumber(v)) end end
