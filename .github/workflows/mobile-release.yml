@@ -1,4 +1,4 @@
-name: Mobile + Release
+name: Mobile + Release (Optimized)
 on: workflow_dispatch
 
 permissions:
@@ -8,63 +8,96 @@ permissions:
 env:
   PROJECT_NAME: PsychEngine
   REPO_PATH: noctrox389/Mime-and-Dash-V1-PORT-NG
+  GRADLE_OPTS: "-Dorg.gradle.daemon=true -Dorg.gradle.parallel=true -Dorg.gradle.caching=true"
 
 jobs:
   get-commit-hash:
     runs-on: ubuntu-latest
+    timeout-minutes: 2
     outputs:
       commit_hash: ${{ steps.get_commit_hash.outputs.COMMIT_HASH }}
     steps:
       - name: Check Repository
         run: |
-          echo "GITHUB_REPOSITORY: $GITHUB_REPOSITORY"
-          echo "REPO_PATH: ${{ env.REPO_PATH }}"
           if [[ "$GITHUB_REPOSITORY" != "${{ env.REPO_PATH }}" ]]; then
-            echo "Doesn't seem to be correct, returning SIGABRT..."
-            exit 6
-          else
-            echo "Seems to be correct..."
+            echo "Repository mismatch, aborting..."
+            exit 1
           fi
 
       - name: Get latest commit hash
         id: get_commit_hash
         run: |
-          commit_hash=${GITHUB_SHA::7}
-          echo "Latest commit hash is $commit_hash"
-          echo "::set-output name=COMMIT_HASH::$commit_hash"
+          echo "::set-output name=COMMIT_HASH::${GITHUB_SHA::7}"
 
   build:
-    name: Android
+    name: Android (Optimized)
     needs: get-commit-hash
-    uses: ./.github/workflows/build.yml
-    with:
-      name: Android
-      os: macos-15
-      setupCommand: sh ./setup/unix.sh
-      buildArgs: "android -final -D officialBuild"
-      artifactName: androidBuild
-      artifactPath: "export/release/android/bin/app/build/outputs/apk/release/*.apk"
+    runs-on: macos-15  # Usar la versión más reciente para mejor rendimiento
+    timeout-minutes: 5
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1  # Solo el commit actual
+        
+      - name: Cache Gradle
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+            build-cache
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle.properties') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
+            
+      - name: Setup JDK
+        uses: actions/setup-java@v3
+        with:
+          distribution: 'zulu'  # Más rápido en macOS
+          java-version: '17'
+          
+      - name: Run setup script
+        run: sh ./setup/unix.sh
+        
+      - name: Build Android (Optimized)
+        run: |
+          ./gradlew assembleRelease \
+            --parallel \
+            --configure-on-demand \
+            --max-workers=2 \
+            --no-daemon \
+            --build-cache \
+            -x lint \
+            -x test
+          
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: androidBuild
+          path: export/release/android/bin/app/build/outputs/apk/release/*.apk
 
   Releaser:
     needs: [get-commit-hash, build]
     runs-on: ubuntu-latest
+    timeout-minutes: 3
     permissions: write-all
+    
     steps:
       - name: Download Android Build
-        uses: actions/download-artifact@main
+        uses: actions/download-artifact@v3
         with:
           name: androidBuild
           path: /home/runner
 
-      - name: Move Android File
-        run: mv /home/runner/${{ env.PROJECT_NAME }}-release.apk /home/runner/${{ env.PROJECT_NAME }}-Android.apk
+      - name: Rename APK
+        run: mv /home/runner/*.apk /home/runner/${{ env.PROJECT_NAME }}-Android.apk
 
-      - name: Publish The Release
+      - name: Publish Release
         uses: softprops/action-gh-release@v2
         with:
           name: "DevBuild ${{ needs.get-commit-hash.outputs.commit_hash }}"
           tag_name: "devbuild-${{ needs.get-commit-hash.outputs.commit_hash }}"
           prerelease: true
-          files: |
-            /home/runner/*.apk
-            
+          files: /home/runner/*.apk
